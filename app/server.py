@@ -1,30 +1,12 @@
 """HTTP surface: see notifications, manage rules.
 
-STATUS: skeleton. /notifications and /replay work; rule CRUD is spec'd but
-TODO(you) — it's the "rule configuration is the heart of the system" part of
-the brief and should carry your fingerprints, not generated ones.
-
 Run:
     uvicorn app.server:app --reload
     curl -X POST localhost:8000/replay
     curl localhost:8000/notifications | python -m json.tool
 
-TODO(you) — rule CRUD, in rough priority order:
-  1. GET  /rules                -> list rules (serialize the dataclasses)
-  2. POST /rules                -> create from JSON; validate:
-        - metric exists in QUEUE_METRICS/AGENT_METRICS for the entity_type
-        - comparator in {>, >=, <, <=, ==}
-        - state_duration_sec requires state_filter
-        - sustained_for/cooldown are non-negative
-     Reject with 422 + a message a support lead (not an engineer) can read.
-  3. PATCH /rules/{id}          -> edit thresholds / enable-disable
-  4. DELETE /rules/{id}         -> and decide: what happens to a FIRING alert
-     when its rule is deleted? (Recommend: emit a final resolved-by-deletion
-     notification so nothing dangles. Your call — defend it in the README.)
-  5. Persistence: rules live in memory here. SQLite via a tiny repo class is
-     plenty; schema sketch in README. Migrations are out of scope.
 
-TODO(you) — nicer demo (optional): GET /notifications as a small HTML page
+TODO: GET /notifications as a small HTML page
 with severity colors and gray suppressed rows, auto-refresh. The reviewer
 seeing suppressed rows in gray is the noise-control story told visually.
 """
@@ -32,13 +14,15 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Iterator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .db import RuleRepo, connect
-from .models import Condition, EntityType, Rule, Severity
+from .models import (Condition, EntityType, Notification, NotificationKind,
+                     Rule, Severity)
 from .notify import Notifier
 from .replay import run_replay
 from .rule_validation import slugify, validate_rule_input
@@ -192,6 +176,124 @@ def create_rule(payload: RuleIn, db=Depends(get_db)):
     )
     rule_repo.create(rule)
     return _serialize_rule(rule)
+
+
+# --------------------------------------------------------------- PATCH /rules
+class RuleUpdate(BaseModel):
+    """Partial update. Only fields present in the request JSON are changed —
+    including explicit nulls, which is why every field here defaults to
+    `None` 
+    """
+    name: Optional[str] = None
+    entity_type: Optional[EntityType] = None
+    conditions: Optional[list[ConditionIn]] = None
+    severity: Optional[Severity] = None
+    recipients: Optional[list[str]] = None
+    entity_ids: Optional[list[str]] = None
+    sustained_for_sec: Optional[int] = None
+    cooldown_sec: Optional[int] = None
+    escalate_after_sec: Optional[int] = None
+    escalate_to: Optional[list[str]] = None
+    enabled: Optional[bool] = None
+
+
+# Fields where an explicit `null` is a real, meaningful value
+_NULLABLE_PATCH_FIELDS = {"entity_ids", "escalate_after_sec"}
+
+
+def _provided_fields(payload: BaseModel) -> dict:
+    """Fields explicitly present in the request body"""
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump(exclude_unset=True)
+    return payload.dict(exclude_unset=True)
+
+
+@app.patch("/rules/{rule_id}")
+def update_rule(rule_id: str, payload: RuleUpdate, db=Depends(get_db)):
+    """Partially update a rule. 404 if it doesn't exist; 422 (same rules as
+    creation) if the resulting merged rule is invalid"""
+    rule_repo = RuleRepo(db)
+    existing = rule_repo.get(rule_id)
+    if existing is None:
+        raise HTTPException(404, f"no rule with id '{rule_id}'")
+
+    provided = _provided_fields(payload)
+    bad_nulls = [f for f, v in provided.items()
+                if v is None and f not in _NULLABLE_PATCH_FIELDS]
+    if bad_nulls:
+        raise HTTPException(422, detail=[f"{f} cannot be set to null" for f in bad_nulls])
+
+    merged = Rule(
+        id=existing.id,
+        name=provided.get("name", existing.name),
+        entity_type=provided.get("entity_type", existing.entity_type),
+        conditions=([Condition(**c) for c in provided["conditions"]]
+                   if "conditions" in provided else existing.conditions),
+        severity=provided.get("severity", existing.severity),
+        recipients=provided.get("recipients", existing.recipients),
+        entity_ids=(provided["entity_ids"] if "entity_ids" in provided
+                   else existing.entity_ids),
+        sustained_for_sec=provided.get("sustained_for_sec", existing.sustained_for_sec),
+        cooldown_sec=provided.get("cooldown_sec", existing.cooldown_sec),
+        escalate_after_sec=(provided["escalate_after_sec"] if "escalate_after_sec" in provided
+                            else existing.escalate_after_sec),
+        escalate_to=provided.get("escalate_to", existing.escalate_to),
+        enabled=provided.get("enabled", existing.enabled),
+    )
+
+    errors = validate_rule_input(merged)   # Rule/Condition duck-type the same as RuleIn/ConditionIn
+    if errors:
+        raise HTTPException(422, detail=errors)
+
+    rule_repo.update(merged)
+    return _serialize_rule(merged)
+
+def _open_alerts_for_rule(notifier: Notifier, rule_id: str) -> dict[str, Notification]:
+    
+    open_map: dict[str, Notification] = {}
+    for n in notifier.store:
+        if n.rule_id != rule_id:
+            continue
+        if n.kind == NotificationKind.FIRED:
+            open_map[n.entity_id] = n
+        elif n.kind == NotificationKind.RESOLVED:
+            open_map.pop(n.entity_id, None)
+    return open_map
+
+
+@app.delete("/rules/{rule_id}")
+def delete_rule(rule_id: str, db=Depends(get_db)):
+    """Delete a rule. 404 if it doesn't exist.
+
+    Before deleting: for every entity whose alert was still FIRING as of
+    the most recent /replay run, emit a synthetic RESOLVED notification
+    ("closed automatically because the rule was deleted") to the same
+    recipients the original alert went to, so nothing dangles silently from
+    a team lead's perspective.
+    """
+    rule_repo = RuleRepo(db)
+    rule = rule_repo.get(rule_id)
+    if rule is None:
+        raise HTTPException(404, f"no rule with id '{rule_id}'")
+
+    closed_entities: list[str] = []
+    notifier: Notifier | None = _last_run["notifier"]
+    if notifier is not None:
+        for entity_id, fired in _open_alerts_for_rule(notifier, rule_id).items():
+            notifier.deliver(Notification(
+                id=f"ntf_del_{uuid.uuid4().hex[:8]}",
+                ts=datetime.now(timezone.utc),
+                kind=NotificationKind.RESOLVED,
+                rule_id=rule.id, rule_name=rule.name, severity=rule.severity,
+                entity_type=rule.entity_type, entity_id=entity_id,
+                message=(f"{rule.name} — {entity_id}: closed automatically "
+                        f"because the rule was deleted while firing"),
+                recipients=fired.recipients, suppressed=False,
+            ))
+            closed_entities.append(entity_id)
+
+    rule_repo.delete(rule_id)
+    return {"deleted": rule_id, "closed_open_alerts_for": closed_entities}
 
 
 def _serialize_rule(rule) -> dict:
