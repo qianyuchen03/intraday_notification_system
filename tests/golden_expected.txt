@@ -1,0 +1,25 @@
+09:25:00  🟠 [warning ] Queue understaffed — billing: agents_available=0, tickets_waiting=12   -> lead_priya
+09:30:00  🟠 [warning ] Queue approaching SLA — billing: wait at 108% of SLA   -> lead_priya
+09:30:00  🔴 [critical] Queue breaching SLA — billing: wait at 108% of SLA   -> lead_priya
+09:40:00  ✅ [warning ] recovered: Queue understaffed — billing: agents_available=1, tickets_waiting=20 (was active 15m00s)   -> lead_priya
+09:45:00  🚨 [critical] ESCALATION: 'Queue breaching SLA' on billing unresolved for 15m00s. Queue breaching SLA — billing: wait at 200% of SLA   -> hos_dana
+09:45:00  🟠 [warning ] Out of adherence 10m+ — a_19: violation for 10m00s   -> a_19,lead_priya
+09:45:00  🟠 [warning ] Queue approaching SLA — tier_2: wait at 83% of SLA   -> lead_marcus
+09:50:00  🔇 suppressed (fired) Queue understaffed — billing: agents_available=0, tickets_waiting=17
+09:55:00  🟠 [warning ] Single call over 45m — a_11: on_call for 45m00s   -> lead_marcus,lead_priya
+10:00:00  🔇 suppressed (resolved) recovered: Queue understaffed — billing: agents_available=1, tickets_waiting=14 (was active 10m00s)
+10:00:00  🔴 [critical] Queue breaching SLA — tier_2: wait at 107% of SLA   -> lead_marcus
+10:10:00  🟠 [warning ] Out of adherence 10m+ — a_88: violation for 10m00s   -> a_88,lead_marcus
+10:10:00  🟠 [warning ] Single call over 45m — a_07: on_call for 45m00s   -> lead_priya
+10:10:30  ✅ [warning ] recovered: Out of adherence 10m+ — a_19 (was active 25m30s)   -> a_19,lead_priya
+10:15:00  🚨 [critical] ESCALATION: 'Queue breaching SLA' on tier_2 unresolved for 15m00s. Queue breaching SLA — tier_2: wait at 107% of SLA   -> hos_dana
+10:15:00  🟠 [warning ] Single call over 45m — a_31: on_call for 45m00s   -> lead_priya
+10:15:00  ✅ [warning ] recovered: Queue approaching SLA — billing: wait at 75% of SLA (was active 45m00s)   -> lead_priya
+10:15:00  ✅ [critical] recovered: Queue breaching SLA — billing: wait at 75% of SLA (was active 45m00s)   -> lead_priya
+10:15:00  ✅ [warning ] recovered: Queue approaching SLA — tier_2: wait at 60% of SLA (was active 30m00s)   -> lead_marcus
+10:15:00  ✅ [critical] recovered: Queue breaching SLA — tier_2: wait at 60% of SLA (was active 15m00s)   -> lead_marcus
+10:16:00  🔇 suppressed (fired) Queue approaching SLA — billing: wait at 92% of SLA
+10:20:00  ✅ [warning ] recovered: Single call over 45m — a_11 (was active 25m00s)   -> lead_marcus,lead_priya
+10:25:00  ✅ [warning ] recovered: Single call over 45m — a_31 (was active 10m00s)   -> lead_priya
+10:25:30  🟠 [warning ] Out of adherence 10m+ — a_23: violation for 10m00s   -> a_23,lead_marcus
+10:30:00  🔇 suppressed (resolved) recovered: Queue approaching SLA — billing: wait at 25% of SLA (was active 14m00s)

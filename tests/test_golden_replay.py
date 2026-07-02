@@ -5,15 +5,10 @@ most valuable test in the project because it locks in the interaction of ALL
 the noise controls at once — any change to thresholds, cooldown semantics, or
 tick cadence shows up as a diff against a human-verified expectation.
 
-HOW TO BLESS THE GOLDEN FILE — TODO:
+HOW TO BLESS THE GOLDEN FILE:
   1. Run:  python -m app.replay events.jsonl > /tmp/replay.txt
   2. Verify the log BY HAND against the raw data. Do not skip this — it is
-     the point. For each line, check the trigger in events.jsonl:
-       - billing breach at 09:30 (snapshot: 130s wait vs 120s target)?
-       - a_19 adherence fire at 09:45 (violation_started_at 09:35 + 10m)?
-       - a_11 long-call fire at 09:55 (on_call since 09:10 + 45m)?
-       - the 10:16 billing re-trip suppressed (resolved 60s earlier)?
-       - exactly 2 ingest drops (evt_...050 duplicate, evt_...096 stale)?
+     the point. For each line, check the trigger in events.jsonl
   3. Copy the verified notification lines into tests/golden_expected.txt
   4. This test then guards them forever.
 """
@@ -29,8 +24,6 @@ GOLDEN = os.path.join(HERE, "golden_expected.txt")
 EVENTS = os.path.join(HERE, "..", "events.jsonl")
 
 
-@pytest.mark.skipif(not os.path.exists(GOLDEN),
-                    reason="golden_expected.txt not blessed yet — see module docstring")
 def test_replay_matches_blessed_golden_log():
     notifier, _ = run_replay(EVENTS, log_path=None)
     actual = [Notifier.format_line(n) for n in notifier.store]

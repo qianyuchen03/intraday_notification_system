@@ -2,17 +2,8 @@
 
 These are the "templates over blank canvas" product decision — a team lead
 edits thresholds on these rather than composing metrics from scratch. Every
-rule here is exercised (or deliberately NOT exercised) by events.jsonl; see
-CLAUDE.md's expected-firings table.
+rule here is exercised (or deliberately NOT exercised) by events.jsonl
 
-TODO(you): review every threshold and noise setting below — these are product
-decisions and you should own them. In particular:
-  - sla_at_risk deliberately has NO hysteresis so the 10:16 billing flap is
-    handled by cooldown (a visible suppression in the demo). You could instead
-    give it clear_threshold=0.7 and let hysteresis absorb the flap silently.
-    Pick one and defend it.
-  - volume_over_forecast never fires in the sample (ratios stay < 1.0).
-    That's an honest negative case — mention it rather than hiding it.
 """
 from .models import Condition, EntityType, Rule, Severity
 
