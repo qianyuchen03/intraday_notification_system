@@ -6,9 +6,6 @@ routing is resolved per-notification from entity -> responsible humans, so the
 same rule ("SLA breach on any queue") lands with billing's lead for billing
 and tier_2's lead for tier_2 without per-queue configuration.
 
-TODO(you) — digest: build_digest() below is spec'd but unimplemented. It is
-the head-of-support experience ("summary unless something is on fire") and a
-deliberately good place to make product decisions in your own voice.
 """
 from __future__ import annotations
 
@@ -24,6 +21,9 @@ QUEUE_LEADS: dict[str, str] = {
     "vip": "lead_priya",          # priya covers vip too
 }
 HEAD_OF_SUPPORT = "hos_dana"
+
+# Stand-in agent roster
+KNOWN_AGENTS: list[str] = ["a_05", "a_07", "a_11", "a_19", "a_23", "a_31", "a_42", "a_88"]
 
 
 class Router:

@@ -1,0 +1,971 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Intraday · Notification Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ---- design tokens -------------------------------------------------
+   A control-room instrument, not a marketing page: dark ink base so the
+   three severity colors carry real meaning instead of competing with
+   decoration. One interactive-only accent (signal blue) never doubles as
+   a severity color, so "this is clickable" and "this is on fire" never
+   get confused. See CLAUDE.md for the fuller design rationale. */
+:root{
+  --ink:#0B0F1A;
+  --panel:#131A2B;
+  --panel-raised:#182140;
+  --hairline:#263252;
+  --fg:#E7ECF6;
+  --fg-muted:#8996B3;
+  --fg-faint:#5C6785;
+  --signal:#4C8DFF;
+  --signal-dim:#2E4C8C;
+  --ok:#34D399;
+  --warn:#F5A524;
+  --crit:#FB4B4B;
+  --font-mono:'IBM Plex Mono',ui-monospace,'SF Mono',Consolas,monospace;
+  --font-sans:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:24px; --space-6:32px; --space-7:48px;
+  --radius:6px;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--ink); color:var(--fg); font-family:var(--font-sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--signal-dim); color:var(--fg);}
+a{color:var(--signal);}
+button, select, input{font-family:inherit; font-size:inherit; color:inherit;}
+button:focus-visible, select:focus-visible, input:focus-visible, [tabindex]:focus-visible{
+  outline:2px solid var(--signal); outline-offset:2px;
+}
+@media (prefers-reduced-motion: reduce){ *{animation-duration:0.01ms !important; transition-duration:0.01ms !important;} }
+
+.eyebrow{
+  font-family:var(--font-mono); font-size:11px; letter-spacing:0.12em;
+  text-transform:uppercase; color:var(--fg-muted);
+}
+
+/* ---- header ---------------------------------------------------- */
+header{
+  border-bottom:1px solid var(--hairline); background:var(--panel);
+  padding:var(--space-4) var(--space-5);
+  display:flex; align-items:center; justify-content:space-between; gap:var(--space-4);
+  flex-wrap:wrap;
+}
+.wordmark{display:flex; flex-direction:column; gap:2px;}
+.wordmark .title{
+  font-family:var(--font-mono); font-weight:600; font-size:16px; letter-spacing:0.02em;
+}
+.header-controls{display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap;}
+select, input[type=text], input[type=number]{
+  background:var(--ink); border:1px solid var(--hairline); color:var(--fg);
+  border-radius:var(--radius); padding:7px 10px;
+}
+select{min-width:220px;}
+.btn{
+  background:var(--panel-raised); border:1px solid var(--hairline); color:var(--fg);
+  border-radius:var(--radius); padding:7px 14px; cursor:pointer;
+  transition:background 150ms, border-color 150ms;
+}
+.btn:hover{border-color:var(--signal-dim);}
+.btn-primary{background:var(--signal); border-color:var(--signal); color:#0B0F1A; font-weight:600;}
+.btn-primary:hover{background:#6BA0FF;}
+.btn-danger{border-color:var(--crit); color:var(--crit); background:transparent;}
+.btn-danger:hover{background:rgba(251,75,75,0.1);}
+.btn-ghost{background:transparent; border-color:transparent; color:var(--fg-muted); padding:6px 8px;}
+.btn-ghost:hover{color:var(--fg); border-color:var(--hairline);}
+.btn:disabled{opacity:0.4; cursor:not-allowed;}
+
+/* ---- status strip: the signature element, reused as chips below -- */
+.status-strip{
+  display:flex; gap:var(--space-5); padding:var(--space-3) var(--space-5);
+  border-bottom:1px solid var(--hairline); background:var(--ink);
+  font-family:var(--font-mono); font-size:13px; flex-wrap:wrap;
+}
+.status-item{display:flex; align-items:center; gap:var(--space-2);}
+.status-item .n{font-weight:600; font-size:15px;}
+.dot{width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0;}
+.dot-crit{background:var(--crit); box-shadow:0 0 0 3px rgba(251,75,75,0.18);}
+.dot-warn{background:var(--warn); box-shadow:0 0 0 3px rgba(245,165,36,0.18);}
+.dot-ok{background:var(--ok);}
+.dot-muted{background:var(--fg-faint);}
+@keyframes pulse{0%,100%{opacity:1;} 50%{opacity:0.35;}}
+.dot-crit.live{animation:pulse 1.6s ease-in-out infinite;}
+
+/* ---- chips (the recurring severity/kind vocabulary) -------------- */
+.chip{
+  display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono);
+  font-size:11px; letter-spacing:0.03em; text-transform:uppercase;
+  padding:3px 8px; border-radius:999px; border:1px solid transparent; white-space:nowrap;
+}
+.chip-crit{background:rgba(251,75,75,0.12); color:var(--crit); border-color:rgba(251,75,75,0.3);}
+.chip-warn{background:rgba(245,165,36,0.12); color:var(--warn); border-color:rgba(245,165,36,0.3);}
+.chip-ok{background:rgba(52,211,153,0.12); color:var(--ok); border-color:rgba(52,211,153,0.3);}
+.chip-info{background:rgba(76,141,255,0.12); color:var(--signal); border-color:rgba(76,141,255,0.3);}
+.chip-muted{background:transparent; color:var(--fg-faint); border-color:var(--hairline);}
+
+/* ---- layout -------------------------------------------------------*/
+main{max-width:880px; margin:0 auto; padding:var(--space-6) var(--space-5) var(--space-7);}
+.empty{
+  text-align:center; padding:var(--space-7) var(--space-4); color:var(--fg-muted);
+}
+.empty .big{font-family:var(--font-mono); font-size:15px; color:var(--fg); margin-bottom:var(--space-2);}
+section{margin-bottom:var(--space-7);}
+section > h2{
+  font-family:var(--font-mono); font-size:13px; letter-spacing:0.04em; text-transform:uppercase;
+  color:var(--fg-muted); margin:0 0 var(--space-3); font-weight:500;
+  display:flex; align-items:center; justify-content:space-between;
+}
+.hint{color:var(--fg-muted); font-size:13px; margin:-4px 0 var(--space-4);}
+
+/* ---- cards --------------------------------------------------------*/
+.card{
+  background:var(--panel); border:1px solid var(--hairline); border-radius:var(--radius);
+  padding:var(--space-4); margin-bottom:var(--space-3);
+}
+.card-row{display:flex; align-items:center; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap;}
+.card-title{font-weight:600; margin-bottom:2px;}
+.card-meta{color:var(--fg-muted); font-size:12.5px; font-family:var(--font-mono);}
+.card-desc{color:var(--fg-muted); font-size:13px; margin-top:6px;}
+.card-actions{display:flex; gap:var(--space-2); align-items:center;}
+
+/* template gallery */
+.template-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(240px,1fr)); gap:var(--space-3);}
+.template-card{
+  background:var(--panel); border:1px solid var(--hairline); border-radius:var(--radius);
+  padding:var(--space-4); cursor:pointer; transition:border-color 150ms, transform 150ms;
+}
+.template-card:hover{border-color:var(--signal-dim); transform:translateY(-1px);}
+.template-card.selected{border-color:var(--signal); background:var(--panel-raised);}
+.template-card .card-title{font-size:14px;}
+
+/* forms */
+.field{margin-bottom:var(--space-3);}
+.field label{display:block; font-size:12.5px; color:var(--fg-muted); margin-bottom:4px;}
+.field input, .field select{width:100%;}
+.field-row{display:flex; gap:var(--space-3); flex-wrap:wrap;}
+.field-row .field{flex:1; min-width:160px;}
+.checkbox-row{display:flex; align-items:center; gap:8px; margin-bottom:6px;}
+.checkbox-row input{width:auto;}
+.inline-form{
+  border:1px solid var(--signal-dim); border-radius:var(--radius); padding:var(--space-4);
+  margin-top:var(--space-3); background:var(--panel-raised);
+}
+.pill-list{display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;}
+.pill{
+  display:inline-flex; align-items:center; gap:6px; background:var(--ink);
+  border:1px solid var(--hairline); border-radius:999px; padding:3px 10px; font-size:12.5px;
+}
+.pill button{background:none; border:none; color:var(--fg-faint); cursor:pointer; padding:0; font-size:14px; line-height:1;}
+.errors{
+  background:rgba(251,75,75,0.08); border:1px solid rgba(251,75,75,0.35); border-radius:var(--radius);
+  padding:var(--space-3); margin-top:var(--space-3); font-size:13px; color:#FFB4B4;
+}
+.errors ul{margin:4px 0 0; padding-left:18px;}
+.toast{
+  position:fixed; bottom:var(--space-5); right:var(--space-5); background:var(--panel-raised);
+  border:1px solid var(--signal-dim); border-radius:var(--radius); padding:var(--space-3) var(--space-4);
+  font-size:13px; max-width:340px; box-shadow:0 8px 24px rgba(0,0,0,0.4); z-index:100;
+}
+
+/* notification / rule list rows */
+.list{display:flex; flex-direction:column; gap:var(--space-2);}
+.row{
+  display:flex; align-items:flex-start; gap:var(--space-3); padding:var(--space-3);
+  background:var(--panel); border:1px solid var(--hairline); border-radius:var(--radius);
+}
+.row.suppressed{opacity:0.55;}
+.row .ts{font-family:var(--font-mono); font-size:12px; color:var(--fg-faint); white-space:nowrap; padding-top:2px;}
+.row .msg{flex:1; font-size:13.5px;}
+.row .recipients{font-size:12px; color:var(--fg-muted); margin-top:2px;}
+
+table{width:100%; border-collapse:collapse; font-size:13px;}
+th{
+  text-align:left; font-family:var(--font-mono); font-size:11px; text-transform:uppercase;
+  letter-spacing:0.04em; color:var(--fg-muted); font-weight:500; padding:8px; border-bottom:1px solid var(--hairline);
+}
+td{padding:10px 8px; border-bottom:1px solid var(--hairline); vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+
+footer{
+  border-top:1px solid var(--hairline); padding:var(--space-5); text-align:center;
+  color:var(--fg-faint); font-size:12px;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">
+    <span class="eyebrow">Intraday</span>
+    <span class="title">Notification Control</span>
+  </div>
+  <div class="header-controls">
+    <select id="identity-select" aria-label="I am">
+      <option value="">I am…</option>
+    </select>
+    <button class="btn" id="replay-btn" title="Replay the sample morning through the engine">▶ Replay sample data</button>
+  </div>
+</header>
+
+<div class="status-strip" id="status-strip"></div>
+
+<main id="main"></main>
+
+<footer>
+  Identity switcher stands in for authentication, which is out of scope for this project — see README.
+</footer>
+
+<script>
+/* =====================================================================
+   State + API helpers
+   ===================================================================== */
+const state = {
+  identity: null,      // {type:'lead'|'hos'|'agent', id, queues?}
+  identities: null,     // GET /identities
+  schema: null,         // GET /rule-schema
+  rules: [],
+  notifications: [],    // for the current identity
+  allNotifications: [], // org-wide, for the status strip
+  lastReplay: null,
+};
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  let body = null;
+  try { body = await res.json(); } catch (e) { /* no body */ }
+  if (!res.ok) {
+    const err = new Error('request failed');
+    err.status = res.status;
+    err.detail = body && body.detail !== undefined ? body.detail : body;
+    throw err;
+  }
+  return body;
+}
+
+// Our own validation errors arrive as {"detail": ["msg", ...]}; pydantic's
+// built-in validation errors (e.g. a malformed type) arrive as
+// {"detail": [{"msg": "...", ...}, ...]}. Handle both shapes so a 422 never
+// just renders "[object Object]" in front of a user.
+function normalizeErrors(detail) {
+  if (!detail) return ['Something went wrong.'];
+  if (typeof detail === 'string') return [detail];
+  if (Array.isArray(detail)) {
+    return detail.map(d => (typeof d === 'string' ? d : (d.msg || JSON.stringify(d))));
+  }
+  return [JSON.stringify(detail)];
+}
+
+let toastTimer = null;
+function toast(msg) {
+  let el = document.getElementById('toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast'; el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, 4000);
+}
+
+/* =====================================================================
+   Rule templates (team-lead gallery). Mirrors app/rules_default.py's
+   DEFAULT_RULES — kept here as presentation metadata (human-readable
+   name/description/unit) since the API's Rule objects don't carry that;
+   the actual thresholds/conditions still round-trip through the same
+   POST /rules validation as anything else, so a stale description here
+   can't produce an invalid rule, only a confusing label. Worth keeping in
+   sync with rules_default.py by hand if that file changes.
+   adherence_10m is deliberately excluded: that's the agent-owned rule,
+   configured only from the agent view (see /agents/{id}/adherence-rule).
+   ===================================================================== */
+const UNIT = {
+  percent: { toDisplay: v => Math.round(v * 100), fromDisplay: v => v / 100, suffix: '%' },
+  minutes: { toDisplay: v => Math.round(v / 60), fromDisplay: v => v * 60, suffix: 'min' },
+  count:   { toDisplay: v => v, fromDisplay: v => v, suffix: '' },
+};
+
+const TEMPLATES = [
+  {
+    id: 'sla_at_risk', name: 'Queue approaching SLA', entityType: 'queue',
+    description: 'Warn me before a queue misses its deadline.',
+    thresholdField: { conditionIndex: 0, unit: 'percent', label: 'Warn when the wait hits this % of the SLA target' },
+    build: (t, entityIds) => ({
+      name: t.name, entity_type: 'queue', severity: 'warning',
+      conditions: [{ metric: 'sla_utilization', comparator: '>=', threshold: 0.8 }],
+      recipients: ['team_lead'], entity_ids: entityIds, cooldown_sec: 900, sustained_for_sec: 0,
+    }),
+  },
+  {
+    id: 'sla_breach', name: 'Queue breaching SLA', entityType: 'queue',
+    description: 'Tell me the moment a queue misses its deadline, and escalate if it drags on.',
+    thresholdField: null,
+    build: (t, entityIds) => ({
+      name: t.name, entity_type: 'queue', severity: 'critical',
+      conditions: [{ metric: 'sla_utilization', comparator: '>=', threshold: 1.0, clear_threshold: 0.95 }],
+      recipients: ['team_lead'], entity_ids: entityIds, cooldown_sec: 600,
+      escalate_after_sec: 900, escalate_to: ['head_of_support'],
+    }),
+  },
+  {
+    id: 'queue_understaffed', name: 'Queue understaffed', entityType: 'queue',
+    description: 'Flag it when nobody is available and tickets are piling up.',
+    thresholdField: { conditionIndex: 1, unit: 'count', label: 'Tickets waiting, with zero agents available' },
+    build: (t, entityIds) => ({
+      name: t.name, entity_type: 'queue', severity: 'warning',
+      conditions: [{ metric: 'agents_available', comparator: '<=', threshold: 0 },
+                   { metric: 'tickets_waiting', comparator: '>=', threshold: 10 }],
+      recipients: ['team_lead'], entity_ids: entityIds, cooldown_sec: 1800,
+    }),
+  },
+  {
+    id: 'long_call_45m', name: 'Long call', entityType: 'agent',
+    description: 'Flag anyone stuck on one call too long, across all your agents.',
+    thresholdField: { conditionIndex: 0, unit: 'minutes', label: 'Flag a call after this many minutes' },
+    build: (t) => ({
+      name: t.name, entity_type: 'agent', severity: 'warning',
+      conditions: [{ metric: 'state_duration_sec', comparator: '>=', threshold: 2700, state_filter: 'on_call' }],
+      recipients: ['team_lead'], entity_ids: null, cooldown_sec: 3600,
+    }),
+  },
+  {
+    id: 'volume_over_forecast', name: 'Volume over forecast', entityType: 'queue',
+    description: 'Catch a queue running well above what was forecast.',
+    thresholdField: { conditionIndex: 0, unit: 'percent', label: 'Flag volume at this % of forecast' },
+    build: (t, entityIds) => ({
+      name: t.name, entity_type: 'queue', severity: 'warning',
+      conditions: [{ metric: 'volume_vs_forecast', comparator: '>=', threshold: 1.5 }],
+      recipients: ['team_lead'], entity_ids: entityIds, cooldown_sec: 1800,
+    }),
+  },
+];
+
+/* =====================================================================
+   Chips — the one visual vocabulary reused for rule severity and
+   notification kind everywhere in the UI.
+   ===================================================================== */
+function severityChip(sev) {
+  const cls = sev === 'critical' ? 'chip-crit' : sev === 'warning' ? 'chip-warn' : 'chip-info';
+  return `<span class="chip ${cls}">${sev}</span>`;
+}
+function kindChip(n) {
+  if (n.suppressed) return `<span class="chip chip-muted">suppressed</span>`;
+  if (n.kind === 'resolved') return `<span class="chip chip-ok">resolved</span>`;
+  if (n.kind === 'escalated') return `<span class="chip chip-crit">escalated</span>`;
+  const cls = n.severity === 'critical' ? 'chip-crit' : n.severity === 'warning' ? 'chip-warn' : 'chip-info';
+  return `<span class="chip ${cls}">fired</span>`;
+}
+function fmtTime(iso) {
+  try { return new Date(iso).toISOString().slice(11, 19) + ' UTC'; } catch (e) { return iso; }
+}
+
+/* =====================================================================
+   Status strip — org-wide open-alert counts, computed client-side from
+   ALL notifications the same way DELETE /rules/{id} finds open alerts
+   server-side (FIRED without a later RESOLVED, ignoring suppressed —
+   suppression only mutes the ping, not the underlying alert state).
+   ===================================================================== */
+function computeOpenAlerts(notifications) {
+  const open = new Map(); // key: rule_id|entity_id -> notification
+  for (const n of notifications) {
+    const key = n.rule_id + '|' + n.entity_id;
+    if (n.kind === 'fired') open.set(key, n);
+    else if (n.kind === 'resolved') open.delete(key);
+  }
+  return [...open.values()];
+}
+
+function renderStatusStrip() {
+  const el = document.getElementById('status-strip');
+  if (!state.lastReplay) {
+    el.innerHTML = `<div class="status-item"><span class="dot dot-muted"></span><span>No data loaded — click "Replay sample data" to start</span></div>`;
+    return;
+  }
+  const open = computeOpenAlerts(state.allNotifications);
+  const firing = open.filter(n => n.severity === 'critical').length;
+  const atRisk = open.filter(n => n.severity === 'warning').length;
+  const clear = firing === 0 && atRisk === 0;
+  el.innerHTML = `
+    <div class="status-item"><span class="dot dot-crit ${firing ? 'live' : ''}"></span><span class="n">${firing}</span> firing</div>
+    <div class="status-item"><span class="dot dot-warn"></span><span class="n">${atRisk}</span> at risk</div>
+    <div class="status-item"><span class="dot ${clear ? 'dot-ok' : 'dot-muted'}"></span><span>${clear ? 'all clear' : (open.length) + ' open total'}</span></div>
+    <div class="status-item" style="margin-left:auto; color:var(--fg-faint);">${state.lastReplay.delivered} delivered · ${state.lastReplay.suppressed} suppressed by noise controls this run</div>
+  `;
+}
+
+/* =====================================================================
+   Bootstrapping: identities + schema load once; replay + identity
+   switch both re-render.
+   ===================================================================== */
+async function loadIdentities() {
+  state.identities = await api('/identities');
+  const sel = document.getElementById('identity-select');
+  sel.innerHTML = '<option value="">I am…</option>';
+  const leadGroup = document.createElement('optgroup');
+  leadGroup.label = 'Team lead';
+  for (const [leadId, queues] of Object.entries(state.identities.team_leads)) {
+    const opt = document.createElement('option');
+    opt.value = `lead:${leadId}`;
+    opt.textContent = `${leadId} (${queues.join(', ')})`;
+    leadGroup.appendChild(opt);
+  }
+  sel.appendChild(leadGroup);
+
+  const hosGroup = document.createElement('optgroup');
+  hosGroup.label = 'Head of support';
+  const hosOpt = document.createElement('option');
+  hosOpt.value = `hos:${state.identities.head_of_support}`;
+  hosOpt.textContent = state.identities.head_of_support;
+  hosGroup.appendChild(hosOpt);
+  sel.appendChild(hosGroup);
+
+  const agentGroup = document.createElement('optgroup');
+  agentGroup.label = 'Agent';
+  for (const agentId of state.identities.agents) {
+    const opt = document.createElement('option');
+    opt.value = `agent:${agentId}`;
+    opt.textContent = agentId;
+    agentGroup.appendChild(opt);
+  }
+  sel.appendChild(agentGroup);
+}
+
+async function refreshOrgWideNotifications() {
+  try {
+    state.allNotifications = await api('/notifications?include_suppressed=true');
+  } catch (e) {
+    state.allNotifications = []; // no replay run yet
+  }
+  renderStatusStrip();
+}
+
+document.getElementById('identity-select').addEventListener('change', async (e) => {
+  const val = e.target.value;
+  if (!val) { state.identity = null; renderMain(); return; }
+  const [type, id] = val.split(/:(.+)/);
+  state.identity = { type, id };
+  await renderMain();
+});
+
+document.getElementById('replay-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('replay-btn');
+  btn.disabled = true; btn.textContent = 'Replaying…';
+  try {
+    state.lastReplay = await api('/replay', { method: 'POST' });
+    toast(`Replay complete — ${state.lastReplay.delivered} notifications delivered, ${state.lastReplay.suppressed} suppressed`);
+    await refreshOrgWideNotifications();
+    await renderMain();
+  } catch (e) {
+    toast('Replay failed: ' + normalizeErrors(e.detail).join(' '));
+  } finally {
+    btn.disabled = false; btn.textContent = '▶ Replay sample data';
+  }
+});
+
+/* =====================================================================
+   Main render dispatch
+   ===================================================================== */
+async function renderMain() {
+  const main = document.getElementById('main');
+  if (!state.identity) {
+    main.innerHTML = `<div class="empty">
+      <div class="big">Pick who you are, above.</div>
+      <div>Different roles see different things — a team lead configures rules for their queues,
+      the head of support gets an org-wide view, and an agent only ever sees their own adherence nudge.</div>
+    </div>`;
+    return;
+  }
+  if (!state.schema) state.schema = await api('/rule-schema');
+
+  if (state.identity.type === 'lead') return renderLeadView();
+  if (state.identity.type === 'hos') return renderHosView();
+  if (state.identity.type === 'agent') return renderAgentView();
+}
+
+/* =====================================================================
+   Team lead view: my rules (scoped to my queues) + template gallery
+   ===================================================================== */
+async function renderLeadView() {
+  const main = document.getElementById('main');
+  const leadId = state.identity.id;
+  const myQueues = state.identities.team_leads[leadId] || [];
+
+  const [allRules, myNotifications] = await Promise.all([
+    api('/rules'),
+    api(`/notifications?recipient=${encodeURIComponent(leadId)}`),
+  ]);
+  state.rules = allRules;
+  state.notifications = myNotifications;
+
+  // "My rules": queue-scoped rules touching my queues (or unscoped = all
+  // queues, which affects me too) plus the org-wide long_call_45m template.
+  // Deliberately excludes per-agent adherence_<id> instances — those belong
+  // to the agent view, not the lead's rule list, even though a lead's
+  // agents' nudges do route notifications to the lead.
+  const myRules = allRules.filter(r => {
+    if (r.id.startsWith('adherence_') && r.id !== 'adherence_10m') return false;
+    if (r.entity_type === 'agent') return r.id === 'long_call_45m';
+    return r.entity_ids === null || r.entity_ids.some(q => myQueues.includes(q));
+  });
+
+  main.innerHTML = `
+    <section>
+      <h2>My rules</h2>
+      ${myRules.length === 0 ? `<div class="hint">No rules covering your queues yet — start from a template below.</div>` : ''}
+      <div class="list" id="my-rules-list"></div>
+    </section>
+    <section>
+      <h2>New rule from template</h2>
+      <p class="hint">Pick a starting point, adjust the number, done.</p>
+      <div class="template-grid" id="template-grid"></div>
+      <div id="template-form-slot"></div>
+    </section>
+    <section>
+      <h2>Recent notifications for ${leadId}</h2>
+      <div class="list" id="lead-notifications-list"></div>
+    </section>
+  `;
+
+  renderRuleList(document.getElementById('my-rules-list'), myRules, { showDelete: true });
+  renderTemplateGrid(myQueues);
+  renderNotificationList(document.getElementById('lead-notifications-list'), state.notifications);
+}
+
+function renderTemplateGrid(myQueues) {
+  const grid = document.getElementById('template-grid');
+  grid.innerHTML = TEMPLATES.map(t => `
+    <div class="template-card" data-template="${t.id}">
+      <div class="card-title">${t.name}</div>
+      <div class="card-desc">${t.description}</div>
+    </div>
+  `).join('');
+  grid.querySelectorAll('.template-card').forEach(card => {
+    card.addEventListener('click', () => {
+      grid.querySelectorAll('.template-card').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+      const template = TEMPLATES.find(t => t.id === card.dataset.template);
+      renderTemplateForm(template, myQueues);
+    });
+  });
+}
+
+function renderTemplateForm(template, myQueues) {
+  const slot = document.getElementById('template-form-slot');
+  const unit = template.thresholdField ? UNIT[template.thresholdField.unit] : null;
+  const defaultCondition = template.build(template, myQueues).conditions[template.thresholdField ? template.thresholdField.conditionIndex : 0];
+  const defaultDisplay = unit ? unit.toDisplay(defaultCondition.threshold) : null;
+
+  const showQueueScope = template.entityType === 'queue';
+  const queueCheckboxes = myQueues.map(q => `
+    <div class="checkbox-row">
+      <input type="checkbox" id="scope-${q}" value="${q}" checked>
+      <label for="scope-${q}" style="margin:0;">${q}</label>
+    </div>`).join('');
+
+  slot.innerHTML = `
+    <div class="inline-form">
+      <div class="field">
+        <label for="tpl-name">Rule name</label>
+        <input type="text" id="tpl-name" value="${template.name}">
+      </div>
+      ${template.thresholdField ? `
+      <div class="field">
+        <label for="tpl-threshold">${template.thresholdField.label}</label>
+        <input type="number" id="tpl-threshold" value="${defaultDisplay}" min="0">
+      </div>` : ''}
+      ${showQueueScope ? `
+      <div class="field">
+        <label>Applies to</label>
+        ${queueCheckboxes || '<div class="hint" style="margin:0;">You have no queues configured.</div>'}
+      </div>` : `<div class="hint">Applies to all agents you lead.</div>`}
+      <div class="card-actions">
+        <button class="btn btn-primary" id="tpl-submit">Create rule</button>
+        <button class="btn btn-ghost" id="tpl-cancel">Cancel</button>
+      </div>
+      <div id="tpl-errors"></div>
+    </div>
+  `;
+
+  document.getElementById('tpl-cancel').addEventListener('click', () => {
+    slot.innerHTML = '';
+    document.querySelectorAll('.template-card').forEach(c => c.classList.remove('selected'));
+  });
+
+  document.getElementById('tpl-submit').addEventListener('click', async () => {
+    const name = document.getElementById('tpl-name').value.trim();
+    let entityIds = null;
+    if (showQueueScope) {
+      entityIds = [...slot.querySelectorAll('.checkbox-row input:checked')].map(i => i.value);
+      if (entityIds.length === 0) {
+        document.getElementById('tpl-errors').innerHTML =
+          `<div class="errors">Pick at least one queue.</div>`;
+        return;
+      }
+    }
+    const payload = template.build(template, entityIds);
+    payload.name = name || template.name;
+    if (template.thresholdField && unit) {
+      const raw = parseFloat(document.getElementById('tpl-threshold').value);
+      payload.conditions[template.thresholdField.conditionIndex].threshold = unit.fromDisplay(raw);
+    }
+    try {
+      await api('/rules', { method: 'POST', body: JSON.stringify(payload) });
+      toast(`Created "${payload.name}"`);
+      slot.innerHTML = '';
+      await renderLeadView();
+    } catch (e) {
+      document.getElementById('tpl-errors').innerHTML =
+        `<div class="errors"><ul>${normalizeErrors(e.detail).map(m => `<li>${m}</li>`).join('')}</ul></div>`;
+    }
+  });
+}
+
+/* =====================================================================
+   Shared: rule list rendering (used by lead + head-of-support views)
+   ===================================================================== */
+function renderRuleList(container, rules, opts = {}) {
+  if (rules.length === 0) { container.innerHTML = `<div class="hint">Nothing here yet.</div>`; return; }
+  container.innerHTML = rules.map(r => `
+    <div class="card" data-rule="${r.id}">
+      <div class="card-row">
+        <div>
+          <div class="card-title">${r.name} ${r.enabled ? '' : '<span class="chip chip-muted" style="margin-left:6px;">disabled</span>'}</div>
+          <div class="card-meta">${r.entity_type} · ${r.entity_ids ? r.entity_ids.join(', ') : 'all'} · cooldown ${r.cooldown_sec}s</div>
+        </div>
+        <div class="card-actions">
+          ${severityChip(r.severity)}
+          <button class="btn btn-ghost toggle-enabled" data-id="${r.id}" data-enabled="${r.enabled}">${r.enabled ? 'Disable' : 'Enable'}</button>
+          ${opts.showDelete ? `<button class="btn btn-danger delete-rule" data-id="${r.id}">Delete</button>` : ''}
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('.toggle-enabled').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const nowEnabled = btn.dataset.enabled === 'true';
+      try {
+        await api(`/rules/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled: !nowEnabled }) });
+        await renderMain();
+      } catch (e) { toast('Could not update rule: ' + normalizeErrors(e.detail).join(' ')); }
+    });
+  });
+  container.querySelectorAll('.delete-rule').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      if (!confirm(`Delete "${id}"? This cannot be undone.`)) return;
+      try {
+        const result = await api(`/rules/${id}`, { method: 'DELETE' });
+        toast(result.closed_open_alerts_for.length
+          ? `Deleted. Closed open alerts for: ${result.closed_open_alerts_for.join(', ')}`
+          : 'Deleted.');
+        await refreshOrgWideNotifications();
+        await renderMain();
+      } catch (e) { toast('Could not delete rule: ' + normalizeErrors(e.detail).join(' ')); }
+    });
+  });
+}
+
+function renderNotificationList(container, notifications) {
+  if (notifications.length === 0) { container.innerHTML = `<div class="hint">Nothing yet — try replaying the sample data.</div>`; return; }
+  container.innerHTML = notifications.slice(0, 30).map(n => `
+    <div class="row ${n.suppressed ? 'suppressed' : ''}">
+      <div class="ts">${fmtTime(n.ts)}</div>
+      <div class="msg">
+        ${kindChip(n)} ${n.message}
+        <div class="recipients">→ ${n.recipients.join(', ') || '—'}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+/* =====================================================================
+   Head of support view: advanced builder + org-wide rule table + feed
+   ===================================================================== */
+async function renderHosView() {
+  const main = document.getElementById('main');
+  const hosId = state.identity.id;
+
+  const [allRules, myNotifications] = await Promise.all([
+    api('/rules'),
+    api(`/notifications?recipient=${encodeURIComponent(hosId)}`),
+  ]);
+  state.rules = allRules;
+  state.notifications = myNotifications;
+
+  main.innerHTML = `
+    <section>
+      <h2>All rules (org-wide)</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Scope</th><th>Severity</th><th>Status</th><th></th></tr></thead>
+        <tbody id="hos-rules-table"></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>New rule <button class="btn" id="hos-new-toggle">+ Advanced builder</button></h2>
+      <div id="hos-form-slot"></div>
+    </section>
+    <section>
+      <h2>Escalations & digest feed for ${hosId}</h2>
+      <p class="hint">By design, this is meant to stay quiet unless something is genuinely on fire — see routing.py.</p>
+      <div class="list" id="hos-notifications-list"></div>
+    </section>
+  `;
+
+  renderHosRuleTable(allRules);
+  renderNotificationList(document.getElementById('hos-notifications-list'), state.notifications);
+
+  document.getElementById('hos-new-toggle').addEventListener('click', () => {
+    const slot = document.getElementById('hos-form-slot');
+    slot.innerHTML = slot.innerHTML ? '' : buildHosFormHtml();
+    if (slot.innerHTML) wireHosForm();
+  });
+}
+
+function renderHosRuleTable(rules) {
+  const tbody = document.getElementById('hos-rules-table');
+  tbody.innerHTML = rules.map(r => `
+    <tr>
+      <td>${r.name}</td>
+      <td class="card-meta">${r.entity_type} · ${r.entity_ids ? r.entity_ids.join(', ') : 'all'}</td>
+      <td>${severityChip(r.severity)}</td>
+      <td>${r.enabled ? '<span class="chip chip-ok">enabled</span>' : '<span class="chip chip-muted">disabled</span>'}</td>
+      <td><button class="btn btn-danger btn-ghost delete-rule" data-id="${r.id}">Delete</button></td>
+    </tr>
+  `).join('');
+  tbody.querySelectorAll('.delete-rule').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      if (!confirm(`Delete "${id}"? This cannot be undone.`)) return;
+      try {
+        const result = await api(`/rules/${id}`, { method: 'DELETE' });
+        toast(result.closed_open_alerts_for.length
+          ? `Deleted. Closed open alerts for: ${result.closed_open_alerts_for.join(', ')}`
+          : 'Deleted.');
+        await refreshOrgWideNotifications();
+        await renderMain();
+      } catch (e) { toast('Could not delete rule: ' + normalizeErrors(e.detail).join(' ')); }
+    });
+  });
+}
+
+function buildHosFormHtml() {
+  const s = state.schema;
+  return `
+    <div class="inline-form">
+      <div class="field"><label for="hos-name">Rule name</label><input type="text" id="hos-name" placeholder="e.g. VIP queue backing up"></div>
+      <div class="field-row">
+        <div class="field">
+          <label for="hos-entity-type">Applies to</label>
+          <select id="hos-entity-type">${s.entity_types.map(t => `<option value="${t}">${t}</option>`).join('')}</select>
+        </div>
+        <div class="field">
+          <label for="hos-severity">Severity</label>
+          <select id="hos-severity">${s.severities.map(sv => `<option value="${sv}">${sv}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="hos-metric">Metric</label>
+          <select id="hos-metric"></select>
+        </div>
+        <div class="field">
+          <label for="hos-comparator">Comparator</label>
+          <select id="hos-comparator">${s.comparators.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
+        </div>
+        <div class="field">
+          <label for="hos-threshold">Threshold</label>
+          <input type="number" id="hos-threshold" step="any" value="1">
+        </div>
+      </div>
+      <div class="field" id="hos-state-filter-field" style="display:none;">
+        <label for="hos-state-filter">State (for "state duration" metric, e.g. on_call)</label>
+        <input type="text" id="hos-state-filter" placeholder="on_call">
+      </div>
+      <div class="field">
+        <label for="hos-entity-ids">Entity IDs (comma-separated, blank = all)</label>
+        <input type="text" id="hos-entity-ids" placeholder="billing, vip">
+      </div>
+      <div class="field">
+        <label>Recipients</label>
+        ${s.recipient_specs.map(spec => `
+          <div class="checkbox-row">
+            <input type="checkbox" class="hos-recipient" value="${spec}">
+            <label style="margin:0;">${spec}</label>
+          </div>`).join('')}
+        <input type="text" id="hos-recipient-extra" placeholder="add a specific id, e.g. hos_dana, then Enter" style="margin-top:6px;">
+        <div class="pill-list" id="hos-recipient-pills"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label for="hos-sustained">Sustained for (sec)</label><input type="number" id="hos-sustained" value="0" min="0"></div>
+        <div class="field"><label for="hos-cooldown">Cooldown (sec)</label><input type="number" id="hos-cooldown" value="900" min="0"></div>
+        <div class="field"><label for="hos-escalate-after">Escalate after (sec, optional)</label><input type="number" id="hos-escalate-after" min="0"></div>
+      </div>
+      <div class="card-actions">
+        <button class="btn btn-primary" id="hos-submit">Create rule</button>
+      </div>
+      <div id="hos-errors"></div>
+    </div>
+  `;
+}
+
+function wireHosForm() {
+  const s = state.schema;
+  const extraRecipients = [];
+
+  function metricOptionsFor(entityType) {
+    return (entityType === 'queue' ? s.queue_metrics : s.agent_metrics)
+      .map(m => `<option value="${m}">${m}</option>`).join('');
+  }
+  function refreshMetricOptions() {
+    const et = document.getElementById('hos-entity-type').value;
+    document.getElementById('hos-metric').innerHTML = metricOptionsFor(et);
+    toggleStateFilter();
+  }
+  function toggleStateFilter() {
+    const needsState = document.getElementById('hos-metric').value === 'state_duration_sec';
+    document.getElementById('hos-state-filter-field').style.display = needsState ? '' : 'none';
+  }
+  function renderPills() {
+    document.getElementById('hos-recipient-pills').innerHTML = extraRecipients.map((r, i) => `
+      <span class="pill">${r}<button data-i="${i}" class="remove-pill">×</button></span>
+    `).join('');
+    document.querySelectorAll('.remove-pill').forEach(btn => {
+      btn.addEventListener('click', () => { extraRecipients.splice(+btn.dataset.i, 1); renderPills(); });
+    });
+  }
+
+  document.getElementById('hos-entity-type').addEventListener('change', refreshMetricOptions);
+  refreshMetricOptions();
+  document.getElementById('hos-metric').addEventListener('change', toggleStateFilter);
+  document.getElementById('hos-recipient-extra').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.value.trim()) {
+      extraRecipients.push(e.target.value.trim());
+      e.target.value = '';
+      renderPills();
+    }
+  });
+
+  document.getElementById('hos-submit').addEventListener('click', async () => {
+    const entityIdsRaw = document.getElementById('hos-entity-ids').value.trim();
+    const checkedRecipients = [...document.querySelectorAll('.hos-recipient:checked')].map(i => i.value);
+    const escalateAfterRaw = document.getElementById('hos-escalate-after').value;
+
+    const payload = {
+      name: document.getElementById('hos-name').value.trim(),
+      entity_type: document.getElementById('hos-entity-type').value,
+      severity: document.getElementById('hos-severity').value,
+      conditions: [{
+        metric: document.getElementById('hos-metric').value,
+        comparator: document.getElementById('hos-comparator').value,
+        threshold: parseFloat(document.getElementById('hos-threshold').value),
+        state_filter: document.getElementById('hos-state-filter').value.trim() || null,
+      }],
+      entity_ids: entityIdsRaw ? entityIdsRaw.split(',').map(s => s.trim()).filter(Boolean) : null,
+      recipients: [...checkedRecipients, ...extraRecipients],
+      sustained_for_sec: parseInt(document.getElementById('hos-sustained').value || '0', 10),
+      cooldown_sec: parseInt(document.getElementById('hos-cooldown').value || '0', 10),
+      escalate_after_sec: escalateAfterRaw ? parseInt(escalateAfterRaw, 10) : null,
+      escalate_to: escalateAfterRaw ? ['head_of_support'] : [],
+    };
+
+    try {
+      await api('/rules', { method: 'POST', body: JSON.stringify(payload) });
+      toast(`Created "${payload.name}"`);
+      await renderMain();
+    } catch (e) {
+      document.getElementById('hos-errors').innerHTML =
+        `<div class="errors"><ul>${normalizeErrors(e.detail).map(m => `<li>${m}</li>`).join('')}</ul></div>`;
+    }
+  });
+}
+
+/* =====================================================================
+   Agent view: exactly one control — the adherence nudge.
+   ===================================================================== */
+async function renderAgentView() {
+  const main = document.getElementById('main');
+  const agentId = state.identity.id;
+
+  const [rule, notifications] = await Promise.all([
+    api(`/agents/${encodeURIComponent(agentId)}/adherence-rule`),
+    api(`/notifications?recipient=${encodeURIComponent(agentId)}`),
+  ]);
+  state.notifications = notifications;
+
+  const minutes = Math.round(rule.conditions[0].threshold / 60);
+
+  main.innerHTML = `
+    <section>
+      <h2>Your adherence nudge</h2>
+      <div class="card">
+        <div class="card-desc" style="margin-top:0; margin-bottom:var(--space-4);">
+          We'll tell you — and your team lead — if you drift out of your schedule for longer than this.
+        </div>
+        <div class="field">
+          <label for="agent-minutes">Notify me after</label>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input type="number" id="agent-minutes" value="${minutes}" min="1" style="width:100px;"> <span class="hint" style="margin:0;">minutes out of adherence</span>
+          </div>
+        </div>
+        <div class="checkbox-row">
+          <input type="checkbox" id="agent-enabled" ${rule.enabled ? 'checked' : ''}>
+          <label for="agent-enabled" style="margin:0;">Nudge is on</label>
+        </div>
+        <div class="card-actions" style="margin-top:var(--space-3);">
+          <button class="btn btn-primary" id="agent-save">Save</button>
+        </div>
+        <div id="agent-errors"></div>
+      </div>
+    </section>
+    <section>
+      <h2>Your recent notifications</h2>
+      <div class="list" id="agent-notifications-list"></div>
+    </section>
+  `;
+
+  renderNotificationList(document.getElementById('agent-notifications-list'), notifications);
+
+  document.getElementById('agent-save').addEventListener('click', async () => {
+    const mins = parseFloat(document.getElementById('agent-minutes').value);
+    const enabled = document.getElementById('agent-enabled').checked;
+    try {
+      await api(`/rules/${rule.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          conditions: [{ metric: 'adherence_violation_sec', comparator: '>=', threshold: mins * 60 }],
+          enabled,
+        }),
+      });
+      toast(`Saved — you'll be nudged after ${mins} minutes.`);
+      await renderAgentView();
+    } catch (e) {
+      document.getElementById('agent-errors').innerHTML =
+        `<div class="errors"><ul>${normalizeErrors(e.detail).map(m => `<li>${m}</li>`).join('')}</ul></div>`;
+    }
+  });
+}
+
+/* =====================================================================
+   Boot
+   ===================================================================== */
+(async function boot() {
+  await loadIdentities();
+  await refreshOrgWideNotifications();
+  await renderMain();
+})();
+</script>
+</body>
+</html>

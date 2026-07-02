@@ -1,32 +1,51 @@
-"""HTTP surface: see notifications, manage rules.
+"""HTTP surface + UI: notifications, rule configuration, and the
+persona-based web UI
 
 Run:
     uvicorn app.server:app --reload
+    open http://localhost:8000/            # the UI
     curl -X POST localhost:8000/replay
     curl localhost:8000/notifications | python -m json.tool
 
+Endpoints:
+    GET    /                       -> the UI (static/index.html)
+    POST   /replay                 -> run events.jsonl through the engine
+    GET    /notifications          -> filter by recipient / include_suppressed
+    GET    /rules                  -> filter by entity_type / enabled_only
+    POST   /rules                  -> create (validated, see rule_validation.py)
+    PATCH  /rules/{id}             -> partial update (exclude_unset semantics)
+    DELETE /rules/{id}             -> delete + close any open alert for it
+    GET    /rule-schema            -> metric/comparator vocabulary, for the
+                                       head-of-support advanced builder
+    GET    /identities             -> team leads/queues/agents, for the
+                                       identity switcher (stand-in for auth)
+    GET    /agents/{id}/adherence-rule
+                                    -> lazily creates + returns an agent's
+                                       personal adherence-nudge rule
 
-TODO: GET /notifications as a small HTML page
-with severity colors and gray suppressed rows, auto-refresh. The reviewer
-seeing suppressed rows in gray is the noise-control story told visually.
 """
 from __future__ import annotations
 
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .db import RuleRepo, connect
-from .models import (Condition, EntityType, Notification, NotificationKind,
-                     Rule, Severity)
+from .models import (AGENT_METRICS, Condition, EntityType, Notification,
+                     NotificationKind, QUEUE_METRICS, Rule, Severity)
 from .notify import Notifier
 from .replay import run_replay
-from .rule_validation import slugify, validate_rule_input
+from .routing import HEAD_OF_SUPPORT, KNOWN_AGENTS, QUEUE_LEADS
+from .rule_validation import VALID_COMPARATORS, slugify, validate_rule_input
 from .rules_default import DEFAULT_RULES
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 DB_PATH = "app.db"
 app = FastAPI(title="Intraday Notifications")
@@ -36,8 +55,8 @@ _last_run: dict = {"notifier": None, "stats": None}
 
 def get_db() -> Iterator:
     """FastAPI dependency: one SQLite connection per request, closed when
-    the request ends."""
-    
+    the request ends.
+    """
     conn = connect(DB_PATH)
     try:
         yield conn
@@ -51,6 +70,12 @@ def get_db() -> Iterator:
 _seed_conn = connect(DB_PATH)
 RuleRepo(_seed_conn).seed_defaults_if_empty(DEFAULT_RULES)
 _seed_conn.close()
+
+
+@app.get("/", include_in_schema=False)
+def ui():
+    """Serve the single-page UI."""
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.post("/replay")
@@ -89,9 +114,7 @@ def list_rules(entity_type: EntityType | None = None,
     """
     Query params:
       entity_type   'queue' | 'agent' — restrict to rules scoped to that
-                    entity type (what a team-lead-facing UI would filter by
-                    when showing "rules about my queues" vs "rules about my
-                    agents").
+                    entity type
       enabled_only  true -> exclude disabled rules (RuleRepo already
                     supports this filter; exposed here for a UI toggle).
     """
@@ -149,8 +172,7 @@ def create_rule(payload: RuleIn, db=Depends(get_db)):
     Validation: every condition's metric must belong to the rule's entity_type's
     metric vocabulary, comparators are whitelisted, state_duration_sec
     requires state_filter, durations are non-negative, recipients can't be
-    empty, and escalate_after_sec requires a non-empty escalate_to. On
-    failure: 422 with a list of plain-English error strings
+    empty, and escalate_after_sec requires a non-empty escalate_to.
     """
     errors = validate_rule_input(payload)
     if errors:
@@ -178,11 +200,9 @@ def create_rule(payload: RuleIn, db=Depends(get_db)):
     return _serialize_rule(rule)
 
 
-# --------------------------------------------------------------- PATCH /rules
 class RuleUpdate(BaseModel):
     """Partial update. Only fields present in the request JSON are changed —
-    including explicit nulls, which is why every field here defaults to
-    `None` 
+    including explicit nulls, which is why every field here defaults to `None`
     """
     name: Optional[str] = None
     entity_type: Optional[EntityType] = None
@@ -248,8 +268,80 @@ def update_rule(rule_id: str, payload: RuleUpdate, db=Depends(get_db)):
     rule_repo.update(merged)
     return _serialize_rule(merged)
 
+
+@app.get("/rule-schema")
+def rule_schema():
+    """Read-only vocabulary for building a rule form. Deliberately a live
+    endpoint rather than duplicated into the frontend: the metric/comparator
+    lists here are the SAME QUEUE_METRICS/AGENT_METRICS/VALID_COMPARATORS
+    validate_rule_input() checks against, so the UI's dropdowns can never
+    be out of sync with what POST/PATCH /rules actually accepts.
+    """
+    return {
+        "entity_types": [e.value for e in EntityType],
+        "queue_metrics": sorted(QUEUE_METRICS),
+        "agent_metrics": sorted(AGENT_METRICS),
+        "comparators": sorted(VALID_COMPARATORS),
+        "severities": [s.value for s in Severity],
+        "recipient_specs": ["team_lead", "head_of_support", "agent:self"],
+    }
+
+
+@app.get("/identities")
+def list_identities():
+    """Stand-in for 'who is logged in'. If real auth is
+    ever added, this endpoint is what it would replace."""
+    leads: dict[str, list[str]] = {}
+    for queue_id, lead in QUEUE_LEADS.items():
+        leads.setdefault(lead, []).append(queue_id)
+    return {"team_leads": leads, "head_of_support": HEAD_OF_SUPPORT,
+            "agents": KNOWN_AGENTS}
+
+
+# ---------------------------------------------------- per-agent adherence rule
+def _personal_adherence_rule_id(agent_id: str) -> str:
+    return f"adherence_{agent_id}"
+
+
+@app.get("/agents/{agent_id}/adherence-rule")
+def get_or_create_adherence_rule(agent_id: str, db=Depends(get_db)):
+    """Return this agent's personal adherence-nudge rule, creating it from
+    the org-wide `adherence_10m` template the first time this agent is
+    visited.
+    """
+    rule_repo = RuleRepo(db)
+    rule_id = _personal_adherence_rule_id(agent_id)
+    existing = rule_repo.get(rule_id)
+    if existing is not None:
+        return _serialize_rule(existing)
+
+    template = next((r for r in DEFAULT_RULES if r.id == "adherence_10m"), None)
+    if template is None:
+        raise HTTPException(500, "adherence_10m template missing from DEFAULT_RULES")
+
+    personal = Rule(
+        id=rule_id,
+        name=f"{agent_id}'s adherence nudge",
+        entity_type=template.entity_type,
+        conditions=[Condition(metric=c.metric, comparator=c.comparator,
+                              threshold=c.threshold, state_filter=c.state_filter,
+                              clear_threshold=c.clear_threshold)
+                   for c in template.conditions],   # copy, never share the template's objects
+        severity=template.severity,
+        recipients=["agent:self", "team_lead"],
+        entity_ids=[agent_id],
+        sustained_for_sec=template.sustained_for_sec,
+        cooldown_sec=template.cooldown_sec,
+        escalate_after_sec=None,
+        escalate_to=[],
+        enabled=True,
+    )
+    rule_repo.create(personal, created_by=agent_id)
+    return _serialize_rule(personal)
+
+
+# -------------------------------------------------------------- DELETE /rules
 def _open_alerts_for_rule(notifier: Notifier, rule_id: str) -> dict[str, Notification]:
-    
     open_map: dict[str, Notification] = {}
     for n in notifier.store:
         if n.rule_id != rule_id:
@@ -305,6 +397,3 @@ def _serialize_rule(rule) -> dict:
     d["entity_type"] = rule.entity_type.value
     d["severity"] = rule.severity.value
     return d
-
-# TODO(you): POST /rules, PATCH /rules/{id}, DELETE /rules/{id} — see module
-# docstring for the validation spec and the deletion-semantics decision.
