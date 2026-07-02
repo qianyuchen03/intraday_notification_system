@@ -73,9 +73,32 @@ def list_notifications(include_suppressed: bool = True, recipient: str | None = 
 
 
 @app.get("/rules")
-def list_rules():
-    # TODO(you): replace with real rule store; this only proves the shape.
-    return [asdict(r) for r in DEFAULT_RULES]
+def list_rules(entity_type: EntityType | None = None,
+               enabled_only: bool = False):
+    """
+    Query params:
+      entity_type   'queue' | 'agent' — restrict to rules scoped to that
+                    entity type (what a team-lead-facing UI would filter by
+                    when showing "rules about my queues" vs "rules about my
+                    agents").
+      enabled_only  true -> exclude disabled rules (RuleRepo already
+                    supports this filter; exposed here for a UI toggle).
+    """
+    rules = _rule_repo.list(enabled_only=enabled_only)
+    if entity_type is not None:
+        rules = [r for r in rules if r.entity_type == entity_type]
+    return [_serialize_rule(r) for r in rules]
+ 
+ 
+def _serialize_rule(rule) -> dict:
+    """asdict() alone leaves Enum members (EntityType, Severity) as enum
+    instances, which json can't encode — FastAPI would 500 on the response,
+    not raise a clear error, so this is worth doing explicitly rather than
+    relying on default serialization."""
+    d = asdict(rule)
+    d["entity_type"] = rule.entity_type.value
+    d["severity"] = rule.severity.value
+    return d
 
 # TODO(you): POST /rules, PATCH /rules/{id}, DELETE /rules/{id} — see module
 # docstring for the validation spec and the deletion-semantics decision.
