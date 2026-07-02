@@ -31,16 +31,39 @@ seeing suppressed rows in gray is the noise-control story told visually.
 from __future__ import annotations
 
 from dataclasses import asdict
+from typing import Iterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
+from .db import RuleRepo, connect
+from .models import EntityType
 from .notify import Notifier
 from .replay import run_replay
 from .rules_default import DEFAULT_RULES
 
+DB_PATH = "app.db"
 app = FastAPI(title="Intraday Notifications")
 
 _last_run: dict = {"notifier": None, "stats": None}
+
+
+def get_db() -> Iterator:
+    """FastAPI dependency: one SQLite connection per request, closed when
+    the request ends."""
+    
+    conn = connect(DB_PATH)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+# One-off connection at import time purely to seed default rules on first
+# run. Immediately closed — request handling never touches this connection,
+# only the per-request ones from get_db().
+_seed_conn = connect(DB_PATH)
+RuleRepo(_seed_conn).seed_defaults_if_empty(DEFAULT_RULES)
+_seed_conn.close()
 
 
 @app.post("/replay")
@@ -74,7 +97,8 @@ def list_notifications(include_suppressed: bool = True, recipient: str | None = 
 
 @app.get("/rules")
 def list_rules(entity_type: EntityType | None = None,
-               enabled_only: bool = False):
+               enabled_only: bool = False,
+               db=Depends(get_db)):
     """
     Query params:
       entity_type   'queue' | 'agent' — restrict to rules scoped to that
@@ -84,7 +108,8 @@ def list_rules(entity_type: EntityType | None = None,
       enabled_only  true -> exclude disabled rules (RuleRepo already
                     supports this filter; exposed here for a UI toggle).
     """
-    rules = _rule_repo.list(enabled_only=enabled_only)
+    rule_repo = RuleRepo(db)
+    rules = rule_repo.list(enabled_only=enabled_only)
     if entity_type is not None:
         rules = [r for r in rules if r.entity_type == entity_type]
     return [_serialize_rule(r) for r in rules]

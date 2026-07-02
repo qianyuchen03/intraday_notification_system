@@ -55,8 +55,9 @@ CREATE INDEX IF NOT EXISTS idx_notifications_rule ON notifications(rule_id);
 """
 
 
-def connect(path: str = "app.db") -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+def connect(path: str = "app.db", check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open a connection and ensure the schema exists."""
+    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
