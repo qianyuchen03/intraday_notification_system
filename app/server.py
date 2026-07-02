@@ -30,15 +30,18 @@ seeing suppressed rows in gray is the noise-control story told visually.
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import asdict
-from typing import Iterator
+from typing import Iterator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 from .db import RuleRepo, connect
-from .models import EntityType
+from .models import Condition, EntityType, Rule, Severity
 from .notify import Notifier
 from .replay import run_replay
+from .rule_validation import slugify, validate_rule_input
 from .rules_default import DEFAULT_RULES
 
 DB_PATH = "app.db"
@@ -113,8 +116,84 @@ def list_rules(entity_type: EntityType | None = None,
     if entity_type is not None:
         rules = [r for r in rules if r.entity_type == entity_type]
     return [_serialize_rule(r) for r in rules]
- 
- 
+
+
+class ConditionIn(BaseModel):
+    metric: str
+    comparator: str
+    threshold: float
+    state_filter: Optional[str] = None
+    clear_threshold: Optional[float] = None
+
+
+class RuleIn(BaseModel):
+    """Request body for creating a rule. Deliberately excludes `id` (server-
+    generated from the name, see _generate_rule_id) — a human picking a rule
+    name shouldn't also have to invent a unique machine id."""
+    name: str
+    entity_type: EntityType
+    conditions: list[ConditionIn]
+    severity: Severity
+    recipients: list[str]
+    entity_ids: Optional[list[str]] = None
+    sustained_for_sec: int = 0
+    cooldown_sec: int = 900
+    escalate_after_sec: Optional[int] = None
+    escalate_to: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
+def _generate_rule_id(name: str, rule_repo: RuleRepo) -> str:
+    """Slugify the name for a readable id ('Queue approaching SLA' ->
+    'queue_approaching_sla'); on collision, append a short random suffix
+    rather than erroring — a user renaming/duplicating a rule shouldn't hit
+    a cryptic 'id already exists' failure over something they didn't type."""
+    base = slugify(name)
+    if rule_repo.get(base) is None:
+        return base
+    for _ in range(5):
+        candidate = f"{base}_{uuid.uuid4().hex[:6]}"
+        if rule_repo.get(candidate) is None:
+            return candidate
+    raise HTTPException(500, "could not generate a unique rule id, try again")
+
+
+@app.post("/rules", status_code=201)
+def create_rule(payload: RuleIn, db=Depends(get_db)):
+    """Create a new rule.
+
+    Validation: every condition's metric must belong to the rule's entity_type's
+    metric vocabulary, comparators are whitelisted, state_duration_sec
+    requires state_filter, durations are non-negative, recipients can't be
+    empty, and escalate_after_sec requires a non-empty escalate_to. On
+    failure: 422 with a list of plain-English error strings
+    """
+    errors = validate_rule_input(payload)
+    if errors:
+        raise HTTPException(422, detail=errors)
+
+    rule_repo = RuleRepo(db)
+    rule = Rule(
+        id=_generate_rule_id(payload.name, rule_repo),
+        name=payload.name,
+        entity_type=payload.entity_type,
+        conditions=[Condition(metric=c.metric, comparator=c.comparator,
+                              threshold=c.threshold, state_filter=c.state_filter,
+                              clear_threshold=c.clear_threshold)
+                   for c in payload.conditions],
+        severity=payload.severity,
+        recipients=payload.recipients,
+        entity_ids=payload.entity_ids,
+        sustained_for_sec=payload.sustained_for_sec,
+        cooldown_sec=payload.cooldown_sec,
+        escalate_after_sec=payload.escalate_after_sec,
+        escalate_to=payload.escalate_to,
+        enabled=payload.enabled,
+    )
+    rule_repo.create(rule)
+    return _serialize_rule(rule)
+
+
 def _serialize_rule(rule) -> dict:
     """asdict() alone leaves Enum members (EntityType, Severity) as enum
     instances, which json can't encode — FastAPI would 500 on the response,
