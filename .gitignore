@@ -33,3 +33,7 @@ htmlcov/
 
 #DB
 app.db
+
+#logs
+*.log
+*.jsonl

@@ -9,8 +9,15 @@ Run:
 
 Endpoints:
     GET    /                       -> the UI (static/index.html)
-    POST   /replay                 -> run events.jsonl through the engine
+    POST   /replay                 -> run events.jsonl through the engine;
+                                       also computes the digest automatically
+                                       (see /digest) — standing in for a
+                                       periodic digest job, since there's no
+                                       real scheduler in this scaffold
     GET    /notifications          -> filter by recipient / include_suppressed
+    GET    /digest                 -> the head-of-support digest from the
+                                       most recent /replay (see routing.py::
+                                       build_digest)
     GET    /rules                  -> filter by entity_type / enabled_only
     POST   /rules                  -> create (validated, see rule_validation.py)
     PATCH  /rules/{id}             -> partial update (exclude_unset semantics)
@@ -41,7 +48,7 @@ from .models import (AGENT_METRICS, Condition, EntityType, Notification,
                      NotificationKind, QUEUE_METRICS, Rule, Severity)
 from .notify import Notifier
 from .replay import run_replay
-from .routing import HEAD_OF_SUPPORT, KNOWN_AGENTS, QUEUE_LEADS
+from .routing import HEAD_OF_SUPPORT, KNOWN_AGENTS, QUEUE_LEADS, build_digest
 from .rule_validation import VALID_COMPARATORS, slugify, validate_rule_input
 from .rules_default import DEFAULT_RULES
 
@@ -50,7 +57,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 DB_PATH = "app.db"
 app = FastAPI(title="Intraday Notifications")
 
-_last_run: dict = {"notifier": None, "stats": None}
+_last_run: dict = {"notifier": None, "stats": None, "digest": None}
 
 
 def get_db() -> Iterator:
@@ -80,13 +87,37 @@ def ui():
 
 @app.post("/replay")
 def trigger_replay():
-    """Replay events.jsonl through the engine and store the results."""
+    """Replay events.jsonl through the engine, store the results, and
+    compute the head-of-support digest automatically over the resulting
+    notification window.
+    """
     notifier, ingestor = run_replay("events.jsonl", log_path=None)
     _last_run["notifier"] = notifier
     _last_run["stats"] = ingestor.stats
+
+    if notifier.store:
+        since = min(n.ts for n in notifier.store)
+        until = max(n.ts for n in notifier.store)
+    else:
+        since = until = datetime.now(timezone.utc)
+    _last_run["digest"] = {
+        "text": build_digest(notifier.store, since, until),
+        "since": since.isoformat(),
+        "until": until.isoformat(),
+    }
+
     return {"delivered": sum(1 for n in notifier.store if not n.suppressed),
             "suppressed": sum(1 for n in notifier.store if n.suppressed),
             "ingest": asdict(ingestor.stats)}
+
+
+@app.get("/digest")
+def get_digest():
+    """The most recently computed digest (see trigger_replay). 409 if no
+    replay has run yet"""
+    if _last_run["digest"] is None:
+        raise HTTPException(409, "no replay has been run yet — POST /replay first")
+    return _last_run["digest"]
 
 
 @app.get("/notifications")

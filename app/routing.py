@@ -1,18 +1,11 @@
-"""Routing: turn a rule's symbolic recipients into concrete people.
-
-The org map is a hardcoded stand-in for what would be a real org/teams table
-(auth & multi-tenancy are explicitly out of scope). The shape is the point:
-routing is resolved per-notification from entity -> responsible humans, so the
-same rule ("SLA breach on any queue") lands with billing's lead for billing
-and tier_2's lead for tier_2 without per-queue configuration.
-
+"""Routing: turn a rule's symbolic recipients into concrete people, and
+build the head-of-support digest.
 """
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
-from .models import EntityType, Notification
+from .models import EntityType, Notification, NotificationKind
 
 # --- org map (stand-in for a real teams table) -----------------------------
 QUEUE_LEADS: dict[str, str] = {
@@ -57,19 +50,96 @@ class Router:
         return [spec]   # already a concrete recipient id
 
 
-def build_digest(notifications: list[Notification],
-                 since: datetime, until: datetime) -> Optional[str]:
-    """TODO(you): implement the head-of-support digest.
+_SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
 
-    Spec (from the design discussion):
-    - Input: all notifications in [since, until], including suppressed ones.
-    - Output: a short human summary, e.g.
-        "2 SLA breaches (billing 45m peak 2.2x, tier_2 15m); 2 adherence
-         violations (a_19 35m break, a_88 ongoing); 2 calls >45m; all queues
-         green at 10:30."
-    - Group by rule, aggregate durations from FIRED->RESOLVED pairs, flag
-      anything still FIRING as 'ongoing'.
-    - Decide: does an empty period produce "all quiet" or no digest at all?
-      (Product call — make it and defend it in the README.)
+
+def _fmt_dur(sec: float) -> str:
+    """Local, deliberately duplicated from engine.py's private `_fmt_dur`
+    rather than imported: it's three lines, and reaching into another
+    module's underscore-prefixed helper is worse coupling than the
+    duplication."""
+    m, s = divmod(int(max(sec, 0)), 60)
+    return f"{m}m{s:02d}s" if m else f"{s}s"
+
+
+def _fmt_clock(ts: datetime) -> str:
+    return ts.strftime("%H:%M") + " UTC"
+
+
+def build_digest(notifications: list[Notification],
+                 since: datetime, until: datetime) -> str:
+    """Build the head-of-support digest: a short summary of what happened
+    in [since, until], covering everything unless nothing happened.
+
+    Structure (all sections optional except the closing line, which always
+    appears): escalations first (the strongest "something is on fire"
+    signal — see routing.py's escalate_after_sec), then one clause per rule
+    grouping the entities it fired for with how long each was active (or
+    "ongoing" if still open at `until`), then a closing status line.
     """
-    raise NotImplementedError
+    if not notifications:
+        return f"All quiet — no notifications between {_fmt_clock(since)} and {_fmt_clock(until)}."
+
+    ordered = sorted(notifications, key=lambda n: n.ts)
+
+    # rule_id -> {"name":.., "severity":.., "closed": [(entity_id, dur_sec)],
+    #             "ongoing": [entity_id, ...]}
+    groups: dict[str, dict] = {}
+    open_fired: dict[tuple[str, str], Notification] = {}   # (rule_id, entity_id) -> FIRED notification
+    escalations: list[Notification] = []
+
+    for n in ordered:
+        if n.kind == NotificationKind.ESCALATED:
+            escalations.append(n)
+            continue
+        g = groups.setdefault(n.rule_id, {"name": n.rule_name, "severity": n.severity.value,
+                                          "closed": [], "ongoing": []})
+        key = (n.rule_id, n.entity_id)
+        if n.kind == NotificationKind.FIRED:
+            open_fired[key] = n
+        elif n.kind == NotificationKind.RESOLVED:
+            fired = open_fired.pop(key, None)
+            duration = (n.ts - fired.ts).total_seconds() if fired else 0.0
+            g["closed"].append((n.entity_id, duration))
+
+    # Anything still FIRED at `until` with no RESOLVED is ongoing.
+    for (rule_id, entity_id), fired in open_fired.items():
+        g = groups[rule_id]
+        g["ongoing"].append((entity_id, (until - fired.ts).total_seconds()))
+
+    clauses: list[str] = []
+
+    if escalations:
+        parts = []
+        for n in escalations[:3]:
+            parts.append(f"{n.rule_name} on {n.entity_id}")
+        more = f", +{len(escalations) - 3} more" if len(escalations) > 3 else ""
+        clauses.append(f"{len(escalations)} escalation{'s' if len(escalations) != 1 else ''} "
+                       f"({', '.join(parts)}{more})")
+
+    def group_sort_key(item):
+        rule_id, g = item
+        count = len(g["closed"]) + len(g["ongoing"])
+        return (_SEVERITY_RANK.get(g["severity"], 3), -count)
+
+    for rule_id, g in sorted(groups.items(), key=group_sort_key):
+        entities = [f"{eid} {_fmt_dur(dur)}" for eid, dur in g["closed"]]
+        entities += [f"{eid} ongoing" for eid, _ in g["ongoing"]]
+        if not entities:
+            continue   # a rule that only ever escalated, never fired directly (shouldn't happen, but don't crash)
+        count = len(entities)
+        shown = entities[:3]
+        more = f", +{count - 3} more" if count > 3 else ""
+        clauses.append(f"{count}× {g['name']} ({', '.join(shown)}{more})")
+
+    # Closing status: what's still open as of `until`, across everything.
+    still_open = [(rule_id, eid) for rule_id, g in groups.items() for eid, _ in g["ongoing"]]
+    if still_open:
+        preview = ", ".join(f"{eid} ({groups[rid]['name']})" for rid, eid in still_open[:3])
+        more = f", +{len(still_open) - 3} more" if len(still_open) > 3 else ""
+        closing = f"{len(still_open)} still open at {_fmt_clock(until)}: {preview}{more}."
+    else:
+        closing = f"All clear as of {_fmt_clock(until)}."
+    clauses.append(closing)
+
+    return "; ".join(clauses)

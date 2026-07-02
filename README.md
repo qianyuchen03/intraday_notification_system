@@ -84,6 +84,11 @@ notifications(id PK, ts, kind, rule_id, entity_type, entity_id, severity,
   recovery, adherence/state reconciliation).
 - `tests/test_golden_replay.py` — full pipeline vs. a hand-verified golden
   log.
+- `tests/test_db.py` — dataclass -> row -> dataclass, filtering, updates
+- `tests/test_routing.py` — build_digest(). hand-crafted scenarios one 
+  behavior each, then a real replay of events.jsonl
+- `tests/test_rule_validation.py` - rule input when POST
+- `test_server_logic.py` - PATCH and DELETE
 
 ## Where AI was used
 
