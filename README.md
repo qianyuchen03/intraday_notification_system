@@ -122,7 +122,7 @@ AlertState  (per rule × entity, engine-internal, not persisted — see below)
 - `test_server_logic.py` - PATCH and DELETE
 
 ## Where AI was used
-###Me: 
+**Me**: 
 - Chose the framing: this is an alerting problem (Prometheus-style alert
   lifecycle); signal-to-noise is the core.
 - Chose the audiences: team lead as rule-authoring primary, agents as
@@ -135,7 +135,7 @@ AlertState  (per rule × entity, engine-internal, not persisted — see below)
 - Chose SQLite persistence and schema
 - Chose the UI design and format of notifications/digests/controls.
 
-###CLAUDE:
+**CLAUDE**:
 - Exploratory data analysis of `events.jsonl` (found the errors and
   the incident narrative).
 - Generated the module scaffolding:
